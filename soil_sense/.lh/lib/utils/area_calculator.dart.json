@@ -1,0 +1,18 @@
+{
+    "sourceFile": "lib/utils/area_calculator.dart",
+    "activeCommit": 0,
+    "commits": [
+        {
+            "activePatchIndex": 0,
+            "patches": [
+                {
+                    "date": 1765222253325,
+                    "content": "Index: \n===================================================================\n--- \n+++ \n"
+                }
+            ],
+            "date": 1765222253325,
+            "name": "Commit-0",
+            "content": "import 'dart:math';\r\nimport 'package:latlong2/latlong.dart';\r\n\r\nclass AreaCalculator {\r\n  /// Calculate area using Shoelace formula\r\n  /// Returns area in square meters\r\n  static double calculateAreaM2(List<LatLng> points) {\r\n    if (points.length < 3) return 0.0;\r\n\r\n    // Convert to meters using approximate conversion\r\n    // 1 degree latitude ≈ 111,320 meters\r\n    // 1 degree longitude ≈ 111,320 * cos(latitude) meters\r\n    \r\n    final centerLat = points.map((p) => p.latitude).reduce((a, b) => a + b) / points.length;\r\n    final latToM = 111320.0;\r\n    final lngToM = 111320.0 * cos(centerLat * pi / 180);\r\n\r\n    // Convert points to meters from first point\r\n    final metersPoints = points.map((p) => [\r\n      (p.latitude - points[0].latitude) * latToM,\r\n      (p.longitude - points[0].longitude) * lngToM,\r\n    ]).toList();\r\n\r\n    // Shoelace formula\r\n    double area = 0.0;\r\n    for (int i = 0; i < metersPoints.length; i++) {\r\n      int j = (i + 1) % metersPoints.length;\r\n      area += metersPoints[i][0] * metersPoints[j][1];\r\n      area -= metersPoints[j][0] * metersPoints[i][1];\r\n    }\r\n\r\n    return (area.abs() / 2.0);\r\n  }\r\n\r\n  /// Convert square meters to hectares\r\n  static double m2ToHectares(double m2) {\r\n    return m2 / 10000.0;\r\n  }\r\n\r\n  /// Calculate perimeter in meters\r\n  static double calculatePerimeter(List<LatLng> points) {\r\n    if (points.length < 2) return 0.0;\r\n\r\n    const distance = Distance();\r\n    double perimeter = 0.0;\r\n\r\n    for (int i = 0; i < points.length; i++) {\r\n      int j = (i + 1) % points.length;\r\n      perimeter += distance.as(LengthUnit.Meter, points[i], points[j]);\r\n    }\r\n\r\n    return perimeter;\r\n  }\r\n}"
+        }
+    ]
+}

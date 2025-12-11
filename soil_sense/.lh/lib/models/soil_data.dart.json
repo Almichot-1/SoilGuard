@@ -1,0 +1,18 @@
+{
+    "sourceFile": "lib/models/soil_data.dart",
+    "activeCommit": 0,
+    "commits": [
+        {
+            "activePatchIndex": 0,
+            "patches": [
+                {
+                    "date": 1765222214037,
+                    "content": "Index: \n===================================================================\n--- \n+++ \n"
+                }
+            ],
+            "date": 1765222214037,
+            "name": "Commit-0",
+            "content": "class SoilData {\r\n  final double ph;\r\n  final double moisture;\r\n  final double temperature;\r\n  final DateTime timestamp;\r\n\r\n  SoilData({\r\n    required this.ph,\r\n    required this.moisture,\r\n    required this.temperature,\r\n    DateTime? timestamp,\r\n  }) : timestamp = timestamp ?? DateTime.now();\r\n\r\n  factory SoilData.fromJson(Map<String, dynamic> json) {\r\n    return SoilData(\r\n      ph: (json['ph'] as num).toDouble(),\r\n      moisture: (json['moisture'] as num).toDouble(),\r\n      temperature: (json['temp'] ?? json['temperature'] as num).toDouble(),\r\n      timestamp: json['timestamp'] != null \r\n          ? DateTime.parse(json['timestamp']) \r\n          : DateTime.now(),\r\n    );\r\n  }\r\n\r\n  Map<String, dynamic> toJson() => {\r\n    'ph': ph,\r\n    'moisture': moisture,\r\n    'temp': temperature,\r\n    'timestamp': timestamp.toIso8601String(),\r\n  };\r\n\r\n  /// Calculate average of multiple soil samples\r\n  static SoilData average(List<SoilData> samples) {\r\n    if (samples.isEmpty) {\r\n      return SoilData(ph: 0, moisture: 0, temperature: 0);\r\n    }\r\n    \r\n    double totalPh = 0;\r\n    double totalMoisture = 0;\r\n    double totalTemp = 0;\r\n    \r\n    for (final sample in samples) {\r\n      totalPh += sample.ph;\r\n      totalMoisture += sample.moisture;\r\n      totalTemp += sample.temperature;\r\n    }\r\n    \r\n    final count = samples.length;\r\n    return SoilData(\r\n      ph: double.parse((totalPh / count).toStringAsFixed(2)),\r\n      moisture: double.parse((totalMoisture / count).toStringAsFixed(1)),\r\n      temperature: double.parse((totalTemp / count).toStringAsFixed(1)),\r\n    );\r\n  }\r\n\r\n  @override\r\n  String toString() => 'SoilData(pH: $ph, Moisture: $moisture%, Temp: $temperature°C)';\r\n}"
+        }
+    ]
+}
