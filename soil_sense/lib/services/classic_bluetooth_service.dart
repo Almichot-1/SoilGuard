@@ -27,6 +27,11 @@ class ClassicBluetoothService extends ChangeNotifier {
   StreamSubscription<BluetoothConnectionState>? _connSub;
   StreamSubscription<BluetoothData>? _dataSub;
 
+  Timer? _autoReconnectTimer;
+  bool _autoReconnectEnabled = true;
+  bool _autoConnectInProgress = false;
+  DateTime? _lastAutoConnectAttemptAt;
+
   String _rxBuffer = '';
 
   int _receivedChunkCount = 0;
@@ -83,6 +88,8 @@ class ClassicBluetoothService extends ChangeNotifier {
       notifyListeners();
 
       if (autoConnect) {
+        _autoReconnectEnabled = true;
+        _startAutoReconnectLoop();
         await autoConnectToKnownModule();
       }
 
@@ -112,6 +119,7 @@ class ClassicBluetoothService extends ChangeNotifier {
         _status = ClassicBtStatus.off;
         _connectedAddress = null;
         _lastError = 'Bluetooth is off';
+        _stopAutoReconnectLoop();
         notifyListeners();
         return;
       }
@@ -121,6 +129,8 @@ class ClassicBluetoothService extends ChangeNotifier {
         _status = ClassicBtStatus.disconnected;
         _lastError = null;
         notifyListeners();
+
+        _startAutoReconnectLoop();
 
         // Fire-and-forget: refresh paired devices + attempt auto-connect.
         unawaited(() async {
@@ -134,9 +144,11 @@ class ClassicBluetoothService extends ChangeNotifier {
       if (connectionState.isConnected) {
         _status = ClassicBtStatus.connected;
         _connectedAddress = connectionState.deviceAddress;
+        _stopAutoReconnectLoop();
       } else {
         _status = ClassicBtStatus.disconnected;
         _connectedAddress = null;
+        _startAutoReconnectLoop();
       }
       notifyListeners();
     });
@@ -161,6 +173,10 @@ class ClassicBluetoothService extends ChangeNotifier {
   /// Attempts to connect to a paired module whose name looks like HC-05/HC-06.
   /// Pair the module in Android Bluetooth settings first.
   Future<bool> autoConnectToKnownModule() async {
+    // Avoid concurrent auto-connect attempts.
+    if (_autoConnectInProgress) return false;
+    _autoConnectInProgress = true;
+    _lastAutoConnectAttemptAt = DateTime.now();
     await refreshPairedDevices();
 
     BluetoothDevice? match;
@@ -182,9 +198,12 @@ class ClassicBluetoothService extends ChangeNotifier {
           ? 'No paired Bluetooth devices found'
           : 'No HC-05/HC-06 found in paired devices';
       notifyListeners();
+      _autoConnectInProgress = false;
       return false;
     }
-    return connectToDevice(match.address);
+    final ok = await connectToDevice(match.address);
+    _autoConnectInProgress = false;
+    return ok;
   }
 
   Future<bool> connectToDevice(String address) async {
@@ -197,6 +216,7 @@ class ClassicBluetoothService extends ChangeNotifier {
       if (!ok) {
         _status = ClassicBtStatus.error;
         _lastError = 'Connect failed (device may be busy or not paired)';
+        _startAutoReconnectLoop();
         notifyListeners();
         return false;
       }
@@ -207,6 +227,7 @@ class ClassicBluetoothService extends ChangeNotifier {
       debugPrint('Classic BT connect error: $e');
       _status = ClassicBtStatus.error;
       _lastError = 'Connect error: $e';
+      _startAutoReconnectLoop();
       notifyListeners();
       return false;
     }
@@ -221,8 +242,49 @@ class ClassicBluetoothService extends ChangeNotifier {
       _connectedAddress = null;
       _status = ClassicBtStatus.disconnected;
       _lastError = null;
+      _startAutoReconnectLoop();
       notifyListeners();
     }
+  }
+
+  void setAutoReconnectEnabled(bool enabled) {
+    _autoReconnectEnabled = enabled;
+    if (!enabled) {
+      _stopAutoReconnectLoop();
+    } else {
+      _startAutoReconnectLoop();
+    }
+  }
+
+  void _startAutoReconnectLoop() {
+    if (!_autoReconnectEnabled) return;
+    if (isConnected) return;
+    if (_status == ClassicBtStatus.off) return;
+    if (_autoReconnectTimer != null) return;
+
+    // Periodically refresh paired devices and attempt auto-connect.
+    _autoReconnectTimer = Timer.periodic(const Duration(seconds: 8), (_) async {
+      if (!_autoReconnectEnabled) return;
+      if (isConnected) {
+        _stopAutoReconnectLoop();
+        return;
+      }
+      if (_status == ClassicBtStatus.off || _status == ClassicBtStatus.initializing) return;
+
+      // Throttle attempts if we already tried very recently.
+      final last = _lastAutoConnectAttemptAt;
+      if (last != null && DateTime.now().difference(last) < const Duration(seconds: 6)) {
+        return;
+      }
+
+      await autoConnectToKnownModule();
+    });
+  }
+
+  void _stopAutoReconnectLoop() {
+    _autoReconnectTimer?.cancel();
+    _autoReconnectTimer = null;
+    _autoConnectInProgress = false;
   }
 
   void clearSamples() {
@@ -391,6 +453,7 @@ class ClassicBluetoothService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _stopAutoReconnectLoop();
     _stateSub?.cancel();
     _connSub?.cancel();
     _dataSub?.cancel();
