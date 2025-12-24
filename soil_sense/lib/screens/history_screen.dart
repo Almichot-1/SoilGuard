@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../services/db_service.dart';
 import '../models/scan_result.dart';
+import '../models/recommendation.dart';
 import 'results_screen.dart';
 import '../utils/constants.dart';
 
@@ -24,12 +25,36 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Future<void> _loadHistory() async {
-    final db = Provider.of<DatabaseService>(context, listen: false);
-    final scans = await db.getAllScans();
-    setState(() {
-      _scans = scans;
-      _isLoading = false;
-    });
+    try {
+      final db = Provider.of<DatabaseService>(context, listen: false);
+      final scans = await db.getAllScans();
+      // Augment scans with top recommendation preview
+      final augmented = <Map<String, dynamic>>[];
+      for (final scan in scans) {
+        try {
+          final recs = await db.getRecommendations(scan['id'] as int);
+          if (recs.isNotEmpty) {
+            final top = recs.first;
+            scan['top_crop'] = top['crop_name'];
+            scan['top_suitability'] = (top['suitability_percent'] as num).toInt();
+          }
+        } catch (_) {
+          // ignore rec fetch errors per-scan
+        }
+        augmented.add(Map<String, dynamic>.from(scan));
+      }
+      if (!mounted) return;
+      setState(() {
+        _scans = augmented;
+        _isLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load history: $e')),
+      );
+    }
   }
 
   Future<void> _deleteScan(int id) async {
@@ -78,11 +103,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
             ),
         ],
       ),
-      body: _isLoading
+        body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _scans.isEmpty
-              ? _buildEmptyState()
-              : _buildHistoryList(),
+            ? _buildEmptyState()
+            : RefreshIndicator(
+              onRefresh: _loadHistory,
+              child: _buildHistoryList(),
+            ),
     );
   }
 
@@ -123,8 +151,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
         final scan = _scans[index];
         return _HistoryCard(
           scan: scan,
-          onTap: () {
-            final result = ScanResult.fromDb(scan, const []);
+          onTap: () async {
+            final db = Provider.of<DatabaseService>(context, listen: false);
+            final recRows = await db.getRecommendations(scan['id'] as int);
+            final recs = recRows
+                .map((r) => Recommendation.fromDb(r, areaHa: (scan['area_ha'] as num).toDouble()))
+                .toList();
+            final result = ScanResult.fromDb(scan, recs);
+            if (!context.mounted) return;
             Navigator.push(
               context,
               MaterialPageRoute(
@@ -226,6 +260,20 @@ class _HistoryCard extends StatelessWidget {
                             fontSize: 12,
                           ),
                         ),
+                        if (scan['top_crop'] != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.recommend, size: 16, color: Colors.green),
+                                const SizedBox(width: 4),
+                                Text(
+                                  '${scan['top_crop']} • ${(scan['top_suitability'] as int)}%',
+                                  style: TextStyle(color: Colors.green[700], fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
                       ],
                     ),
                   ),

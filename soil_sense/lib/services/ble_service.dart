@@ -28,6 +28,7 @@ class BleService extends ChangeNotifier {
   List<SoilData> get soilSamples => List.unmodifiable(_soilSamples);
   List<BluetoothDevice> get discoveredDevices => List.unmodifiable(_discoveredDevices);
   bool get isConnected => _status == BleStatus.connected || _isSimulating;
+  bool get isSimulating => _isSimulating;
   int get sampleCount => _soilSamples.length;
   
   SoilData? get latestSample => _soilSamples.isNotEmpty ? _soilSamples.last : null;

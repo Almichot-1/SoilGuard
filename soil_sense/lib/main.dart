@@ -4,14 +4,19 @@ import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'services/ble_service.dart';
+import 'services/classic_bluetooth_service.dart';
 import 'services/gps_service.dart';
 import 'services/db_service.dart';
 import 'services/recommender_service.dart';
 import 'screens/home_screen.dart';
+import 'services/offline_map_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
+  // Initialize offline map caching
+  await OfflineMapService.init();
+
   // Lock orientation to portrait
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
@@ -25,11 +30,16 @@ void main() async {
   // Initialize recommender with crop data
   final recommenderService = RecommenderService();
   await recommenderService.loadCrops();
+
+  // Initialize Bluetooth Classic (HC-05 / BC417) service
+  final classicBtService = ClassicBluetoothService();
+  await classicBtService.initialize();
   
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => BleService()),
+        ChangeNotifierProvider.value(value: classicBtService),
         ChangeNotifierProvider(create: (_) => GpsService()),
         Provider.value(value: dbService),
         Provider.value(value: recommenderService),

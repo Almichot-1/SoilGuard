@@ -18,6 +18,15 @@ class AppConstants {
   static const String appName = 'Soil Sense';
   static const String version = '1.0.0';
   
+  // Map tiles
+  // Default OSM template for online tiles. For offline prefetch, replace with
+  // a tile server you control and set allowTilePrefetch=true.
+  static const String tileUrlTemplate = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+  static const bool allowTilePrefetch = false; // Set to true only if permitted by your tile provider
+  // Optional: set this to a direct raster .mbtiles URL to auto-download on first run.
+  // Leave empty to prompt the user once on first scan.
+  static const String bootstrapMbtilesUrl = '';
+  
   // BLE
   static const String esp32ServiceUuid = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
   static const String esp32CharacteristicUuid = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
@@ -29,4 +38,5 @@ class AppConstants {
   // Scanning
   static const int scanDurationSeconds = 60;
   static const int minPointsForPolygon = 3;
+  
 }

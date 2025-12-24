@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import '../utils/constants.dart';
+import '../services/offline_map_service.dart';
 
 class LiveMapWidget extends StatelessWidget {
   final List<LatLng> trackPoints;
@@ -31,11 +32,12 @@ class LiveMapWidget extends StatelessWidget {
         minZoom: 10.0,
       ),
       children: [
-        // OpenStreetMap tiles
+        // Map tiles (online with offline fallback)
         TileLayer(
-          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          urlTemplate: AppConstants.tileUrlTemplate,
           userAgentPackageName: 'com.example.soil_sense',
           maxZoom: 22,
+          tileProvider: OfflineMapService.tileProvider,
         ),
         
         // Polygon fill (if we have enough points)

@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../services/ble_service.dart';
+import '../services/classic_bluetooth_service.dart';
 import '../services/gps_service.dart';
 import '../services/recommender_service.dart';
 import '../services/db_service.dart';
@@ -15,6 +18,7 @@ import '../utils/constants.dart';
 import '../widgets/live_map_widget.dart';
 import '../widgets/soil_data_card.dart';
 import 'results_screen.dart';
+import '../services/offline_map_service.dart';
 
 enum ScanState { ready, scanning, processing, complete }
 
@@ -38,6 +42,7 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     _initializeServices();
+    _ensureOfflineMap();
     
     _pulseController = AnimationController(
       duration: const Duration(milliseconds: 1000),
@@ -48,6 +53,41 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
     );
   }
 
+  Future<void> _ensureOfflineMap() async {
+    // If MBTiles not present, try auto-download using saved/bootstrap URL
+    final exists = await OfflineMapService.mbtilesFileExists();
+    if (exists) return;
+    final url = await OfflineMapService.getBootstrapUrl();
+    if (url == null || url.isEmpty) return; // user can set via menu
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const AlertDialog(
+        title: Text('Downloading map…'),
+        content: SizedBox(
+          width: 240,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              LinearProgressIndicator(),
+              SizedBox(height: 12),
+              Text('This may take a few minutes'),
+            ],
+          ),
+        ),
+      ),
+    );
+    final ok = await OfflineMapService.downloadMbtilesFromUrlWithProgress(url);
+    if (mounted) Navigator.of(context).pop();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(ok ? 'Offline map ready' : 'Failed to download offline map')),
+      );
+      setState(() {});
+    }
+  }
+
   Future<void> _initializeServices() async {
     final gpsService = context.read<GpsService>();
     await gpsService.initialize();
@@ -56,6 +96,7 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
   void _startScan() async {
     final gpsService = context.read<GpsService>();
     final bleService = context.read<BleService>();
+    final classicBt = context.read<ClassicBluetoothService>();
 
     // Initialize GPS
     if (gpsService.status != GpsStatus.ready && 
@@ -71,8 +112,14 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
     gpsService.clearTrack();
     bleService.clearSamples();
 
-    // Start simulation mode for BLE (for testing without ESP32)
-    bleService.startSimulation();
+    // Clear classic BT samples too (if any)
+    classicBt.clearSamples();
+
+    // If Bluetooth Classic is connected (HC-05/BC417), use it as the sensor stream.
+    // Otherwise fall back to simulated BLE data for development.
+    if (!classicBt.isConnected) {
+      bleService.startSimulation();
+    }
 
     // Start GPS tracking
     await gpsService.startTracking();
@@ -102,10 +149,13 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
 
     final gpsService = context.read<GpsService>();
     final bleService = context.read<BleService>();
+    final classicBt = context.read<ClassicBluetoothService>();
 
     // Stop tracking
     final points = await gpsService.stopTracking();
-    bleService.stopSimulation();
+    if (bleService.isSimulating) {
+      bleService.stopSimulation();
+    }
 
     if (points.length < 3) {
       _showError('Need at least 3 GPS points to calculate area. Please try again.');
@@ -116,7 +166,8 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
     setState(() => _scanState = ScanState.processing);
 
     // Process data
-    await _processResults(points, bleService.soilSamples);
+    final samples = classicBt.isConnected ? classicBt.soilSamples : bleService.soilSamples;
+    await _processResults(points, samples);
   }
 
   Future<void> _processResults(List<LatLng> points, List<SoilData> samples) async {
@@ -132,6 +183,19 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
 
     // Get recommendations
     final recommendations = recommenderService.getRecommendations(avgSoil, areaHa);
+
+    // Show the top recommended crop immediately (if available)
+    if (mounted && recommendations.isNotEmpty) {
+      final top = recommendations.first;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Top recommendation: ${top.crop.name} • ${top.suitabilityPercent.toStringAsFixed(0)}%',
+          ),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
 
     // Create result
     final result = ScanResult(
@@ -190,6 +254,34 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         actions: [
+          // Offline map actions
+          IconButton(
+            tooltip: 'Offline Map Options',
+            icon: const Icon(Icons.download),
+            onPressed: _showOfflineMapOptions,
+          ),
+          // Simulation toggle
+          Consumer<BleService>(
+            builder: (context, ble, _) {
+              return IconButton(
+                tooltip: ble.isSimulating ? 'Stop Simulation' : 'Start Simulation',
+                icon: Icon(ble.isSimulating ? Icons.science : Icons.science_outlined),
+                onPressed: () {
+                  if (ble.isSimulating) {
+                    ble.stopSimulation();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Simulation stopped')),
+                    );
+                  } else {
+                    ble.startSimulation();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Simulation started')),
+                    );
+                  }
+                },
+              );
+            },
+          ),
           if (_scanState == ScanState.scanning)
             Padding(
               padding: const EdgeInsets.only(right: 16),
@@ -303,12 +395,41 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                 // Soil data card
                 Consumer<BleService>(
                   builder: (context, bleService, _) {
+                    final classicBt = context.watch<ClassicBluetoothService>();
+                    final soilData = classicBt.isConnected
+                        ? classicBt.latestSample
+                        : bleService.latestSample;
+                    final sampleCount = classicBt.isConnected
+                        ? classicBt.sampleCount
+                        : bleService.sampleCount;
                     return SoilDataCard(
-                      soilData: bleService.latestSample,
-                      sampleCount: bleService.sampleCount,
+                      soilData: soilData,
+                      sampleCount: sampleCount,
                     );
                   },
                 ),
+
+                if (kDebugMode)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Consumer<ClassicBluetoothService>(
+                      builder: (context, classicBt, _) {
+                        if (!classicBt.isConnected) return const SizedBox.shrink();
+                        return Text(
+                          'Classic BT rx: ${classicBt.receivedByteCount} chars, '
+                          '${classicBt.receivedLineCount} lines '
+                          '(last: ${classicBt.lastRawLine ?? '-'}; '
+                          'unparsed: ${classicBt.lastUnparsedLine ?? '-'})',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: Colors.black54),
+                        );
+                      },
+                    ),
+                  ),
                 
                 const SizedBox(height: 16),
                 
@@ -421,6 +542,157 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
     );
   }
 
+  void _showOfflineMapOptions() async {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.file_download),
+                  title: const Text('Download MBTiles from URL'),
+                  subtitle: const Text('Provide a legal MBTiles URL to store offline'),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    final url = await _promptForUrl();
+                    if (url == null || url.isEmpty) return;
+                    // Save URL for future auto-downloads
+                    await OfflineMapService.setBootstrapUrl(url);
+                    double p = 0;
+                    if (mounted) {
+                      showDialog(
+                        context: context,
+                        barrierDismissible: false,
+                        builder: (_) => StatefulBuilder(
+                          builder: (ctx, setState) {
+                            return AlertDialog(
+                              title: const Text('Downloading map…'),
+                              content: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  LinearProgressIndicator(value: p > 0 && p < 1 ? p : null),
+                                  const SizedBox(height: 12),
+                                  Text('${(p * 100).clamp(0, 100).toStringAsFixed(0)}%'),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      );
+                    }
+                    final ok = await OfflineMapService.downloadMbtilesFromUrlWithProgress(
+                      url,
+                      onProgress: (v) {
+                        p = v;
+                      },
+                    );
+                    if (mounted) Navigator.of(context).pop();
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(ok ? 'Offline map downloaded' : 'Failed to download MBTiles'),
+                      ),
+                    );
+                    setState(() {});
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.upload_file),
+                  title: const Text('Import MBTiles from Files'),
+                  subtitle: const Text('Pick an .mbtiles file to use offline'),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    final ok = await _pickAndImportMbtiles();
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(ok ? 'MBTiles imported' : 'Import cancelled or failed'),
+                      ),
+                    );
+                    setState(() {});
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.save_alt),
+                  title: const Text('Cache tiles for current view'),
+                  subtitle: const Text('Requires permitted tile server; disabled for default OSM'),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    if (!AppConstants.allowTilePrefetch ||
+                        AppConstants.tileUrlTemplate.contains('tile.openstreetmap.org')) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Prefetch disabled: configure a permitted tile server first.'),
+                        ),
+                      );
+                      return;
+                    }
+                    final bounds = _mapController.camera.visibleBounds;
+                    final zoom = _mapController.camera.zoom.round();
+                    final count = await OfflineMapService.cacheTilesForBounds(
+                      bounds: bounds,
+                      zoom: zoom,
+                    );
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Cached $count tiles for current view.')),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<String?> _promptForUrl() async {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Enter MBTiles URL'),
+          content: TextField(
+            controller: controller,
+            decoration: const InputDecoration(hintText: 'https://example.com/addis.mbtiles'),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            TextButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('Download')),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<bool> _pickAndImportMbtiles() async {
+    try {
+      final res = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+        withData: true,
+      );
+      if (res == null || res.files.isEmpty) return false;
+      final file = res.files.single;
+      final path = file.path;
+      // Validate extension when possible
+      if ((path != null && !path.toLowerCase().endsWith('.mbtiles')) &&
+          (file.name.isNotEmpty && !file.name.toLowerCase().endsWith('.mbtiles'))) {
+        return false;
+      }
+      final bytes = file.bytes;
+      return await OfflineMapService.importMbtilesFromPath(path ?? '', bytes: bytes);
+    } catch (_) {
+      return false;
+    }
+  }
+
   Color _getGpsColor(GpsStatus status) {
     switch (status) {
       case GpsStatus.tracking:
@@ -433,6 +705,8 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
     }
   }
 }
+
+// Download progress UI removed (no longer used)
 
 class _InfoBadge extends StatelessWidget {
   final IconData icon;

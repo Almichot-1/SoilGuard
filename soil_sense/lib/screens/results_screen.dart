@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/scan_result.dart';
 import '../utils/constants.dart';
 import '../widgets/crop_recommendation_card.dart';
@@ -30,6 +31,58 @@ class _ResultsScreenState extends State<ResultsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Top recommendation banner
+            if (result.recommendations.isNotEmpty)
+              Container(
+                margin: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.green.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.emoji_events, color: Colors.green),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Top Recommendation',
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '${result.recommendations.first.crop.name} • ${result.recommendations.first.suitabilityPercent.toStringAsFixed(0)}% suitability',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Copy Summary',
+                      icon: const Icon(Icons.copy, color: Colors.green),
+                      onPressed: () async {
+                        final top = result.recommendations.first;
+                        final areaText = result.areaHa < 1
+                            ? '${result.areaM2.toStringAsFixed(0)} m²'
+                            : '${result.areaHa.toStringAsFixed(3)} ha';
+                        final summary =
+                            'Field Area: $areaText\nTop Crop: ${top.crop.name} (${top.suitabilityPercent.toStringAsFixed(0)}%)\nSeed: ${top.seedKg.toStringAsFixed(2)} kg\nSpacing: ${top.spacing}\nPlants: ${top.plantCount}';
+                        await Clipboard.setData(ClipboardData(text: summary));
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Summary copied to clipboard')),
+                        );
+                      },
+                    )
+                  ],
+                ),
+              ),
             // Map preview
             SizedBox(
               height: 200,

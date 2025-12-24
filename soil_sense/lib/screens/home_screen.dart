@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/ble_service.dart';
+import '../services/classic_bluetooth_service.dart';
 import '../services/gps_service.dart';
 import '../services/db_service.dart';
 import '../utils/constants.dart';
 import 'scan_screen.dart';
 import 'history_screen.dart';
+// Removed standalone offline map screen navigation
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -117,14 +119,47 @@ class _HomeScreenState extends State<HomeScreen> {
                           color: Colors.grey.shade300,
                         ),
                         Consumer<BleService>(
-                          builder: (context, ble, _) => _StatItem(
-                            icon: Icons.bluetooth,
-                            value: ble.isConnected ? 'On' : 'Off',
-                            label: 'Sensor',
-                            valueColor: ble.isConnected 
-                                ? Colors.green 
-                                : Colors.grey,
-                          ),
+                          builder: (context, ble, _) {
+                            final classicBt = context.watch<ClassicBluetoothService>();
+                            final sensorOn = ble.isConnected || classicBt.isConnected;
+                            final hasData = ble.sampleCount > 0 || classicBt.sampleCount > 0;
+
+                            String value;
+                            Color valueColor;
+                            if (ble.isConnected) {
+                              value = hasData ? 'On' : 'On (no data)';
+                              valueColor = hasData ? Colors.green : Colors.orange;
+                            } else {
+                              switch (classicBt.status) {
+                                case ClassicBtStatus.connected:
+                                  value = hasData ? 'On' : 'On (no data)';
+                                  valueColor = hasData ? Colors.green : Colors.orange;
+                                  break;
+                                case ClassicBtStatus.connecting:
+                                case ClassicBtStatus.initializing:
+                                  value = 'Connecting…';
+                                  valueColor = Colors.orange;
+                                  break;
+                                case ClassicBtStatus.error:
+                                  value = 'Error';
+                                  valueColor = Colors.red;
+                                  break;
+                                case ClassicBtStatus.off:
+                                case ClassicBtStatus.disconnected:
+                                  value = sensorOn ? (hasData ? 'On' : 'On (no data)') : 'Off';
+                                  valueColor = sensorOn
+                                      ? (hasData ? Colors.green : Colors.orange)
+                                      : Colors.grey;
+                                  break;
+                              }
+                            }
+                            return _StatItem(
+                              icon: Icons.bluetooth,
+                              value: value,
+                              label: 'Sensor',
+                              valueColor: valueColor,
+                            );
+                          },
                         ),
                       ],
                     ),
@@ -197,6 +232,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ),
                     ),
+
+                    const SizedBox(height: 16),
                   ],
                 ),
               ),
