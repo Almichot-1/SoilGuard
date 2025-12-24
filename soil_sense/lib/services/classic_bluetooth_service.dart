@@ -18,6 +18,10 @@ class ClassicBluetoothService extends ChangeNotifier {
 
   final List<BluetoothDevice> _pairedDevices = [];
   final List<SoilData> _soilSamples = [];
+  final List<SoilData> _pendingAggregate = [];
+
+  // Take average of N readings as one stored sample.
+  static const int _aggregateWindow = 4;
 
   StreamSubscription<BluetoothState>? _stateSub;
   StreamSubscription<BluetoothConnectionState>? _connSub;
@@ -223,6 +227,7 @@ class ClassicBluetoothService extends ChangeNotifier {
 
   void clearSamples() {
     _soilSamples.clear();
+    _pendingAggregate.clear();
     _rxBuffer = '';
     _receivedChunkCount = 0;
     _receivedByteCount = 0;
@@ -259,7 +264,12 @@ class ClassicBluetoothService extends ChangeNotifier {
       shouldNotify = true;
       final parsed = _parseSoilDataLine(line);
       if (parsed != null) {
-        _soilSamples.add(parsed);
+        _pendingAggregate.add(parsed);
+        if (_pendingAggregate.length >= _aggregateWindow) {
+          final averaged = SoilData.average(_pendingAggregate);
+          _pendingAggregate.clear();
+          _soilSamples.add(averaged);
+        }
         _lastUnparsedLine = null;
         shouldNotify = true;
       } else {
@@ -315,7 +325,16 @@ class ClassicBluetoothService extends ChangeNotifier {
       }
 
       final ph = pick(kv, ['ph']);
-      final moisture = pick(kv, ['moisture', 'hum', 'humidity']);
+      final moisture = pick(kv, [
+        'moisture',
+        'moist',
+        'soilmoisture',
+        'hum',
+        'humidity',
+        // common typos seen in serial output
+        'moistue',
+        'moistrue',
+      ]);
       final temp = pick(kv, ['temp', 'temperature']);
       if (ph != null && moisture != null && temp != null) {
         return SoilData(ph: ph, moisture: moisture, temperature: temp);

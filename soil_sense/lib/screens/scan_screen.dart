@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
@@ -408,28 +407,6 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                     );
                   },
                 ),
-
-                if (kDebugMode)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Consumer<ClassicBluetoothService>(
-                      builder: (context, classicBt, _) {
-                        if (!classicBt.isConnected) return const SizedBox.shrink();
-                        return Text(
-                          'Classic BT rx: ${classicBt.receivedByteCount} chars, '
-                          '${classicBt.receivedLineCount} lines '
-                          '(last: ${classicBt.lastRawLine ?? '-'}; '
-                          'unparsed: ${classicBt.lastUnparsedLine ?? '-'})',
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(color: Colors.black54),
-                        );
-                      },
-                    ),
-                  ),
                 
                 const SizedBox(height: 16),
                 

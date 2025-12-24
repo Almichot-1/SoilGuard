@@ -64,7 +64,7 @@ class GpsService extends ChangeNotifier {
   Future<LatLng?> _getCurrentLocation() async {
     try {
       final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+        locationSettings: _buildLocationSettings(),
       );
       _currentLocation = LatLng(position.latitude, position.longitude);
       notifyListeners();
@@ -73,6 +73,22 @@ class GpsService extends ChangeNotifier {
       debugPrint('Error getting current location: $e');
       return null;
     }
+  }
+
+  LocationSettings _buildLocationSettings() {
+    // Prefer best accuracy for navigation on Android.
+    // On other platforms, fall back to high accuracy.
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return AndroidSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 3,
+        intervalDuration: Duration(seconds: 1),
+      );
+    }
+    return LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 3,
+    );
   }
 
   /// Start tracking GPS points for field mapping
@@ -84,15 +100,15 @@ class GpsService extends ChangeNotifier {
     _status = GpsStatus.tracking;
     notifyListeners();
 
-    const locationSettings = LocationSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 2, // Minimum 2 meters between updates
-    );
-
     _positionStream = Geolocator.getPositionStream(
-      locationSettings: locationSettings,
+      locationSettings: _buildLocationSettings(),
     ).listen(
       (Position position) {
+        // Skip poor fixes (network-only / low quality) to reduce map drift.
+        // `position.accuracy` is in meters; smaller is better.
+        if (position.accuracy.isNaN || position.accuracy > 25) {
+          return;
+        }
         final newPoint = LatLng(position.latitude, position.longitude);
         
         // Only add if significantly different from last point
@@ -117,7 +133,7 @@ class GpsService extends ChangeNotifier {
     const distance = Distance();
     final meters = distance.as(LengthUnit.Meter, lastPoint, newPoint);
     
-    return meters >= 2.0; // Minimum 2 meters apart
+    return meters >= 3.0; // Minimum 3 meters apart
   }
 
   /// Stop tracking and close polygon
