@@ -7,7 +7,14 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../models/soil_data.dart';
 
-enum ClassicBtStatus { off, initializing, connecting, connected, disconnected, error }
+enum ClassicBtStatus {
+  off,
+  initializing,
+  connecting,
+  connected,
+  disconnected,
+  error,
+}
 
 class ClassicBluetoothService extends ChangeNotifier {
   final FlutterBluetoothClassic _bt = FlutterBluetoothClassic();
@@ -19,6 +26,8 @@ class ClassicBluetoothService extends ChangeNotifier {
   final List<BluetoothDevice> _pairedDevices = [];
   final List<SoilData> _soilSamples = [];
   final List<SoilData> _pendingAggregate = [];
+
+  SoilData? _latestReading;
 
   // Take average of N readings as one stored sample.
   static const int _aggregateWindow = 4;
@@ -47,7 +56,9 @@ class ClassicBluetoothService extends ChangeNotifier {
   List<BluetoothDevice> get pairedDevices => List.unmodifiable(_pairedDevices);
   List<SoilData> get soilSamples => List.unmodifiable(_soilSamples);
   int get sampleCount => _soilSamples.length;
-  SoilData? get latestSample => _soilSamples.isNotEmpty ? _soilSamples.last : null;
+  SoilData? get latestSample =>
+      _soilSamples.isNotEmpty ? _soilSamples.last : null;
+  SoilData? get latestReading => _latestReading;
 
   int get receivedChunkCount => _receivedChunkCount;
   int get receivedByteCount => _receivedByteCount;
@@ -182,7 +193,17 @@ class ClassicBluetoothService extends ChangeNotifier {
     BluetoothDevice? match;
     for (final d in _pairedDevices) {
       final name = d.name.toLowerCase();
-      if (name.contains('hc-05') || name.contains('hc05') || name.contains('hc-06') || name.contains('hc06')) {
+      // Common serial-module names across clones/vendors.
+      // (Keep this conservative: avoid matching headphones/car stereos.)
+      if (name.contains('hc-05') ||
+          name.contains('hc05') ||
+          name.contains('hc-06') ||
+          name.contains('hc06') ||
+          name.contains('linvor') ||
+          name.contains('zs-040') ||
+          name.contains('jdy') ||
+          name.contains('bt05') ||
+          name.contains('bt06')) {
         match = d;
         break;
       }
@@ -269,11 +290,15 @@ class ClassicBluetoothService extends ChangeNotifier {
         _stopAutoReconnectLoop();
         return;
       }
-      if (_status == ClassicBtStatus.off || _status == ClassicBtStatus.initializing) return;
+      if (_status == ClassicBtStatus.off ||
+          _status == ClassicBtStatus.initializing) {
+        return;
+      }
 
       // Throttle attempts if we already tried very recently.
       final last = _lastAutoConnectAttemptAt;
-      if (last != null && DateTime.now().difference(last) < const Duration(seconds: 6)) {
+      if (last != null &&
+          DateTime.now().difference(last) < const Duration(seconds: 6)) {
         return;
       }
 
@@ -290,6 +315,7 @@ class ClassicBluetoothService extends ChangeNotifier {
   void clearSamples() {
     _soilSamples.clear();
     _pendingAggregate.clear();
+    _latestReading = null;
     _rxBuffer = '';
     _receivedChunkCount = 0;
     _receivedByteCount = 0;
@@ -297,6 +323,51 @@ class ClassicBluetoothService extends ChangeNotifier {
     _lastRawLine = null;
     _lastUnparsedLine = null;
     notifyListeners();
+  }
+
+  /// Store exactly one sample on demand.
+  ///
+  /// Uses the average of the most recent readings (up to [_aggregateWindow])
+  /// when available; falls back to the latest reading.
+  bool takeSample() {
+    final SoilData? sample;
+    if (_pendingAggregate.isNotEmpty) {
+      sample = SoilData.average(_pendingAggregate);
+    } else {
+      sample = _latestReading;
+    }
+    if (sample == null) return false;
+    _soilSamples.add(sample);
+    notifyListeners();
+    return true;
+  }
+
+  /// Add a sample provided by the user (manual entry).
+  ///
+  /// This updates [latestReading] so the UI reflects the manual value.
+  void addManualSample(SoilData sample) {
+    _soilSamples.add(sample);
+    _latestReading = sample;
+    notifyListeners();
+  }
+
+  /// Replace a previously stored sample.
+  ///
+  /// Returns false if [index] is out of bounds.
+  bool updateSampleAt(int index, SoilData sample) {
+    if (index < 0 || index >= _soilSamples.length) return false;
+    _soilSamples[index] = sample;
+    _latestReading = sample;
+    notifyListeners();
+    return true;
+  }
+
+  /// Remove the most recently stored sample.
+  bool undoLastSample() {
+    if (_soilSamples.isEmpty) return false;
+    _soilSamples.removeLast();
+    notifyListeners();
+    return true;
   }
 
   void _onIncomingText(String chunk) {
@@ -326,11 +397,10 @@ class ClassicBluetoothService extends ChangeNotifier {
       shouldNotify = true;
       final parsed = _parseSoilDataLine(line);
       if (parsed != null) {
+        _latestReading = parsed;
         _pendingAggregate.add(parsed);
-        if (_pendingAggregate.length >= _aggregateWindow) {
-          final averaged = SoilData.average(_pendingAggregate);
-          _pendingAggregate.clear();
-          _soilSamples.add(averaged);
+        while (_pendingAggregate.length > _aggregateWindow) {
+          _pendingAggregate.removeAt(0);
         }
         _lastUnparsedLine = null;
         shouldNotify = true;
@@ -405,7 +475,11 @@ class ClassicBluetoothService extends ChangeNotifier {
 
     // 3) CSV support.
     // Recommended format for this app: ph,moisture,temp\n
-    final fields = line.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+    final fields = line
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
     if (fields.length < 3) return null;
 
     // Prefer explicit 3-field payload.

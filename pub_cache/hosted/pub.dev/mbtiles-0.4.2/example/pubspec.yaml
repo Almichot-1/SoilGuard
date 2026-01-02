@@ -1,0 +1,16 @@
+name: mbtiles_example
+description: Example program for the mbtiles package
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.2.0
+
+dependencies:
+  latlong2: ^0.9.0
+  mbtiles:
+    path: ../
+  path: ^1.8.3
+
+dev_dependencies:
+  lint: ^2.1.0

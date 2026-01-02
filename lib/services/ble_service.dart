@@ -12,13 +12,15 @@ class BleService extends ChangeNotifier {
   BleStatus _status = BleStatus.disconnected;
   BluetoothDevice? _connectedDevice;
   BluetoothCharacteristic? _dataCharacteristic;
-  
+
   final List<SoilData> _soilSamples = [];
   final List<BluetoothDevice> _discoveredDevices = [];
-  
+
+  SoilData? _latestReading;
+
   StreamSubscription<List<int>>? _dataSubscription;
   StreamSubscription<BluetoothConnectionState>? _connectionSubscription;
-  
+
   // Simulated data timer for testing without ESP32
   Timer? _simulationTimer;
   bool _isSimulating = false;
@@ -26,12 +28,15 @@ class BleService extends ChangeNotifier {
   BleStatus get status => _status;
   BluetoothDevice? get connectedDevice => _connectedDevice;
   List<SoilData> get soilSamples => List.unmodifiable(_soilSamples);
-  List<BluetoothDevice> get discoveredDevices => List.unmodifiable(_discoveredDevices);
+  List<BluetoothDevice> get discoveredDevices =>
+      List.unmodifiable(_discoveredDevices);
   bool get isConnected => _status == BleStatus.connected || _isSimulating;
   bool get isSimulating => _isSimulating;
   int get sampleCount => _soilSamples.length;
-  
-  SoilData? get latestSample => _soilSamples.isNotEmpty ? _soilSamples.last : null;
+
+  SoilData? get latestSample =>
+      _soilSamples.isNotEmpty ? _soilSamples.last : null;
+  SoilData? get latestReading => _latestReading;
 
   /// Initialize BLE and check permissions
   Future<bool> initialize() async {
@@ -96,7 +101,7 @@ class BleService extends ChangeNotifier {
 
       await Future.delayed(const Duration(seconds: 10));
       await FlutterBluePlus.stopScan();
-      
+
       _status = BleStatus.disconnected;
       notifyListeners();
     } catch (e) {
@@ -152,7 +157,7 @@ class BleService extends ChangeNotifier {
     if (_dataCharacteristic == null) return;
 
     await _dataCharacteristic!.setNotifyValue(true);
-    
+
     _dataSubscription = _dataCharacteristic!.onValueReceived.listen((value) {
       _parseAndStoreSoilData(value);
     });
@@ -164,7 +169,7 @@ class BleService extends ChangeNotifier {
       final jsonString = utf8.decode(value);
       final jsonData = json.decode(jsonString) as Map<String, dynamic>;
       final soilData = SoilData.fromJson(jsonData);
-      _soilSamples.add(soilData);
+      _latestReading = soilData;
       notifyListeners();
       debugPrint('Received soil data: $soilData');
     } catch (e) {
@@ -175,23 +180,70 @@ class BleService extends ChangeNotifier {
   /// Start simulation mode for testing without ESP32
   void startSimulation() {
     if (_isSimulating) return;
-    
+
     _isSimulating = true;
     _status = BleStatus.connected;
     _soilSamples.clear();
+    _latestReading = null;
     notifyListeners();
+  }
 
-    _simulationTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
-      // Generate realistic random soil data
-      final soilData = SoilData(
-        ph: 5.5 + (DateTime.now().millisecond % 30) / 10, // 5.5 - 8.5
-        moisture: 20 + (DateTime.now().millisecond % 500) / 10, // 20 - 70%
-        temperature: 18 + (DateTime.now().millisecond % 150) / 10, // 18 - 33°C
-      );
+  SoilData _generateSimulatedReading() {
+    return SoilData(
+      ph: 5.5 + (DateTime.now().millisecond % 30) / 10, // 5.5 - 8.5
+      moisture: 20 + (DateTime.now().millisecond % 500) / 10, // 20 - 70%
+      temperature: 18 + (DateTime.now().millisecond % 150) / 10, // 18 - 33°C
+    );
+  }
+
+  /// Take exactly one sample and store it.
+  ///
+  /// - In simulation mode, generates a new reading.
+  /// - With a real sensor, stores the latest received reading.
+  bool takeSample() {
+    if (_isSimulating) {
+      final soilData = _generateSimulatedReading();
+      _latestReading = soilData;
       _soilSamples.add(soilData);
       notifyListeners();
-      debugPrint('Simulated soil data: $soilData');
-    });
+      debugPrint('Simulated soil sample taken: $soilData');
+      return true;
+    }
+
+    final reading = _latestReading;
+    if (reading == null) return false;
+    _soilSamples.add(reading);
+    notifyListeners();
+    debugPrint('Soil sample taken: $reading');
+    return true;
+  }
+
+  /// Add a sample provided by the user (manual entry).
+  ///
+  /// This updates [_latestReading] so the UI reflects the manual value.
+  void addManualSample(SoilData sample) {
+    _soilSamples.add(sample);
+    _latestReading = sample;
+    notifyListeners();
+  }
+
+  /// Replace a previously stored sample.
+  ///
+  /// Returns false if [index] is out of bounds.
+  bool updateSampleAt(int index, SoilData sample) {
+    if (index < 0 || index >= _soilSamples.length) return false;
+    _soilSamples[index] = sample;
+    _latestReading = sample;
+    notifyListeners();
+    return true;
+  }
+
+  /// Remove the most recently stored sample.
+  bool undoLastSample() {
+    if (_soilSamples.isEmpty) return false;
+    _soilSamples.removeLast();
+    notifyListeners();
+    return true;
   }
 
   /// Stop simulation
@@ -200,12 +252,14 @@ class BleService extends ChangeNotifier {
     _simulationTimer = null;
     _isSimulating = false;
     _status = BleStatus.disconnected;
+    _latestReading = null;
     notifyListeners();
   }
 
   /// Clear all collected samples
   void clearSamples() {
     _soilSamples.clear();
+    _latestReading = null;
     notifyListeners();
   }
 
@@ -219,11 +273,11 @@ class BleService extends ChangeNotifier {
     _dataSubscription?.cancel();
     _connectionSubscription?.cancel();
     _simulationTimer?.cancel();
-    
+
     if (_connectedDevice != null) {
       await _connectedDevice!.disconnect();
     }
-    
+
     _connectedDevice = null;
     _dataCharacteristic = null;
     _isSimulating = false;

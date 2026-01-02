@@ -33,7 +33,7 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
   Timer? _scanTimer;
   int _elapsedSeconds = 0;
   final MapController _mapController = MapController();
-  
+
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
 
@@ -42,7 +42,7 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
     super.initState();
     _initializeServices();
     _ensureOfflineMap();
-    
+
     _pulseController = AnimationController(
       duration: const Duration(milliseconds: 1000),
       vsync: this,
@@ -52,12 +52,21 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
     );
   }
 
+  Future<void> _initializeServices() async {
+    final gps = context.read<GpsService>();
+    final ble = context.read<BleService>();
+    final classicBt = context.read<ClassicBluetoothService>();
+
+    await gps.initialize();
+    await ble.initialize();
+    await classicBt.initialize(autoConnect: true);
+  }
+
   Future<void> _ensureOfflineMap() async {
-    // If MBTiles not present, try auto-download using saved/bootstrap URL
     final exists = await OfflineMapService.mbtilesFileExists();
     if (exists) return;
     final url = await OfflineMapService.getBootstrapUrl();
-    if (url == null || url.isEmpty) return; // user can set via menu
+    if (url == null || url.isEmpty) return;
     if (!mounted) return;
     showDialog(
       context: context,
@@ -79,111 +88,107 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
     );
     final ok = await OfflineMapService.downloadMbtilesFromUrlWithProgress(url);
     if (mounted) Navigator.of(context).pop();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(ok ? 'Offline map ready' : 'Failed to download offline map')),
-      );
-      setState(() {});
-    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok ? 'Offline map ready' : 'Failed to download offline map',
+        ),
+      ),
+    );
   }
 
-  Future<void> _initializeServices() async {
-    final gpsService = context.read<GpsService>();
-    await gpsService.initialize();
-  }
-
-  void _startScan() async {
-    final gpsService = context.read<GpsService>();
-    final bleService = context.read<BleService>();
+  Future<void> _startScan() async {
+    final gps = context.read<GpsService>();
+    final ble = context.read<BleService>();
     final classicBt = context.read<ClassicBluetoothService>();
 
-    // Initialize GPS
-    if (gpsService.status != GpsStatus.ready && 
-        gpsService.status != GpsStatus.tracking) {
-      final initialized = await gpsService.initialize();
-      if (!initialized) {
-        _showError('GPS not available. Please enable location services.');
-        return;
-      }
-    }
+    await gps.initialize();
+    await ble.initialize();
+    await classicBt.initialize(autoConnect: true);
 
-    // Clear previous data
-    gpsService.clearTrack();
-    bleService.clearSamples();
-
-    // Clear classic BT samples too (if any)
+    ble.clearSamples();
     classicBt.clearSamples();
-
-    // If Bluetooth Classic is connected (HC-05/BC417), use it as the sensor stream.
-    // Otherwise fall back to simulated BLE data for development.
-    if (!classicBt.isConnected) {
-      bleService.startSimulation();
-    }
-
-    // Start GPS tracking
-    await gpsService.startTracking();
+    await gps.startTracking();
 
     setState(() {
       _scanState = ScanState.scanning;
       _elapsedSeconds = 0;
     });
-
     _pulseController.repeat(reverse: true);
-
-    // Start timer
-    _scanTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      setState(() => _elapsedSeconds++);
-      
-      // Auto-center map on current location
-      final currentLoc = gpsService.currentLocation;
-      if (currentLoc != null) {
-        _mapController.move(currentLoc, _mapController.camera.zoom);
-      }
+    _scanTimer?.cancel();
+    _scanTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      setState(() => _elapsedSeconds += 1);
     });
   }
 
   Future<void> _stopScan() async {
+    if (_scanState != ScanState.scanning) return;
+    setState(() => _scanState = ScanState.processing);
     _scanTimer?.cancel();
     _pulseController.stop();
 
-    final gpsService = context.read<GpsService>();
-    final bleService = context.read<BleService>();
+    final gps = context.read<GpsService>();
+    final ble = context.read<BleService>();
     final classicBt = context.read<ClassicBluetoothService>();
 
-    // Stop tracking
-    final points = await gpsService.stopTracking();
-    if (bleService.isSimulating) {
-      bleService.stopSimulation();
-    }
+    final points = await gps.stopTracking();
+    final samples = classicBt.isConnected
+        ? classicBt.soilSamples
+        : ble.soilSamples;
 
     if (points.length < 3) {
-      _showError('Need at least 3 GPS points to calculate area. Please try again.');
+      _showError('Need at least 3 GPS points to compute area.');
+      setState(() => _scanState = ScanState.ready);
+      return;
+    }
+    if (samples.isEmpty) {
+      _showError('No sensor samples captured.');
       setState(() => _scanState = ScanState.ready);
       return;
     }
 
-    setState(() => _scanState = ScanState.processing);
-
-    // Process data
-    final samples = classicBt.isConnected ? classicBt.soilSamples : bleService.soilSamples;
     await _processResults(points, samples);
   }
 
-  Future<void> _processResults(List<LatLng> points, List<SoilData> samples) async {
+  void _takeSample() {
+    final ble = context.read<BleService>();
+    final classicBt = context.read<ClassicBluetoothService>();
+    final ok = classicBt.isConnected
+        ? classicBt.takeSample()
+        : ble.takeSample();
+    if (!ok) {
+      _showError('No sensor reading yet. Please wait and try again.');
+      return;
+    }
+
+    final count = classicBt.isConnected
+        ? classicBt.sampleCount
+        : ble.sampleCount;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Sample saved ($count total)'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
+  Future<void> _processResults(
+    List<LatLng> points,
+    List<SoilData> samples,
+  ) async {
     final recommenderService = context.read<RecommenderService>();
     final dbService = context.read<DatabaseService>();
 
-    // Calculate area
     final areaM2 = AreaCalculator.calculateAreaM2(points);
     final areaHa = AreaCalculator.m2ToHectares(areaM2);
-
-    // Average soil data
     final avgSoil = SoilData.average(samples);
 
-    // Get recommendations
-    final recommendations = recommenderService.getRecommendations(avgSoil, areaHa);
+    final recommendations = recommenderService.getRecommendations(
+      avgSoil,
+      areaHa,
+    );
 
-    // Show the top recommended crop immediately (if available)
     if (mounted && recommendations.isNotEmpty) {
       final top = recommendations.first;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -196,7 +201,6 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
       );
     }
 
-    // Create result
     final result = ScanResult(
       soilData: avgSoil,
       areaM2: areaM2,
@@ -205,18 +209,14 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
       recommendations: recommendations,
     );
 
-    // Save to database
     await dbService.saveScanResult(result);
 
     setState(() => _scanState = ScanState.complete);
 
-    // Navigate to results
     if (mounted) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(
-          builder: (_) => ResultsScreen(result: result),
-        ),
+        MaterialPageRoute(builder: (_) => ResultsScreen(result: result)),
       );
     }
   }
@@ -253,28 +253,30 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         actions: [
-          // Offline map actions
           IconButton(
             tooltip: 'Offline Map Options',
             icon: const Icon(Icons.download),
             onPressed: _showOfflineMapOptions,
           ),
-          // Simulation toggle
           Consumer<BleService>(
             builder: (context, ble, _) {
               return IconButton(
-                tooltip: ble.isSimulating ? 'Stop Simulation' : 'Start Simulation',
-                icon: Icon(ble.isSimulating ? Icons.science : Icons.science_outlined),
+                tooltip: ble.isSimulating
+                    ? 'Disable Simulation Mode'
+                    : 'Enable Simulation Mode',
+                icon: Icon(
+                  ble.isSimulating ? Icons.science : Icons.science_outlined,
+                ),
                 onPressed: () {
                   if (ble.isSimulating) {
                     ble.stopSimulation();
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Simulation stopped')),
+                      const SnackBar(content: Text('Simulation mode disabled')),
                     );
                   } else {
                     ble.startSimulation();
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Simulation started')),
+                      const SnackBar(content: Text('Simulation mode enabled')),
                     );
                   }
                 },
@@ -286,7 +288,10 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
               padding: const EdgeInsets.only(right: 16),
               child: Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(20),
@@ -311,12 +316,10 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
       ),
       body: Column(
         children: [
-          // Map section (takes most of the screen)
           Expanded(
             flex: 3,
             child: Stack(
               children: [
-                // Live map
                 Consumer<GpsService>(
                   builder: (context, gpsService, _) {
                     return LiveMapWidget(
@@ -327,8 +330,6 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                     );
                   },
                 ),
-                
-                // Area overlay
                 Positioned(
                   top: 16,
                   left: 16,
@@ -345,15 +346,13 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                       final areaHa = AreaCalculator.m2ToHectares(area);
                       return _InfoBadge(
                         icon: Icons.square_foot,
-                        label: areaHa < 1 
+                        label: areaHa < 1
                             ? '${area.toStringAsFixed(0)} m²'
                             : '${areaHa.toStringAsFixed(2)} ha',
                       );
                     },
                   ),
                 ),
-                
-                // Processing overlay
                 if (_scanState == ScanState.processing)
                   Container(
                     color: Colors.black54,
@@ -374,8 +373,6 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
               ],
             ),
           ),
-          
-          // Bottom panel
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -391,13 +388,12 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Soil data card
                 Consumer<BleService>(
                   builder: (context, bleService, _) {
                     final classicBt = context.watch<ClassicBluetoothService>();
                     final soilData = classicBt.isConnected
-                        ? classicBt.latestSample
-                        : bleService.latestSample;
+                        ? (classicBt.latestReading ?? classicBt.latestSample)
+                        : (bleService.latestReading ?? bleService.latestSample);
                     final sampleCount = classicBt.isConnected
                         ? classicBt.sampleCount
                         : bleService.sampleCount;
@@ -407,13 +403,9 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                     );
                   },
                 ),
-                
                 const SizedBox(height: 16),
-                
-                // Control buttons
                 Row(
                   children: [
-                    // GPS status
                     Consumer<GpsService>(
                       builder: (context, gps, _) {
                         return Container(
@@ -422,7 +414,9 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                             vertical: 12,
                           ),
                           decoration: BoxDecoration(
-                            color: _getGpsColor(gps.status).withValues(alpha: 0.1),
+                            color: _getGpsColor(
+                              gps.status,
+                            ).withValues(alpha: 0.1),
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Row(
@@ -444,17 +438,14 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                         );
                       },
                     ),
-                    
                     const SizedBox(width: 16),
-                    
-                    // Start/Stop button
                     Expanded(
                       child: AnimatedBuilder(
                         animation: _pulseAnimation,
                         builder: (context, child) {
                           return Transform.scale(
-                            scale: _scanState == ScanState.scanning 
-                                ? _pulseAnimation.value 
+                            scale: _scanState == ScanState.scanning
+                                ? _pulseAnimation.value
                                 : 1.0,
                             child: SizedBox(
                               height: 56,
@@ -462,8 +453,8 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                                 onPressed: _scanState == ScanState.processing
                                     ? null
                                     : (_scanState == ScanState.scanning
-                                        ? _stopScan
-                                        : _startScan),
+                                          ? _stopScan
+                                          : _startScan),
                                 icon: Icon(
                                   _scanState == ScanState.scanning
                                       ? Icons.stop
@@ -480,7 +471,8 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                                   ),
                                 ),
                                 style: ElevatedButton.styleFrom(
-                                  backgroundColor: _scanState == ScanState.scanning
+                                  backgroundColor:
+                                      _scanState == ScanState.scanning
                                       ? Colors.red
                                       : AppColors.primary,
                                   foregroundColor: Colors.white,
@@ -496,19 +488,39 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                     ),
                   ],
                 ),
-                
-                // Instructions
+                if (_scanState == ScanState.scanning) ...[
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 52,
+                    child: ElevatedButton.icon(
+                      onPressed: _takeSample,
+                      icon: const Icon(Icons.add, size: 26),
+                      label: const Text(
+                        'Take Sample',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 Text(
                   _scanState == ScanState.ready
                       ? 'Walk around your field perimeter to measure area'
                       : _scanState == ScanState.scanning
-                          ? 'Keep walking... GPS is tracking your path'
-                          : 'Processing...',
-                  style: TextStyle(
-                    color: Colors.grey.shade600,
-                    fontSize: 13,
-                  ),
+                      ? 'Keep walking... GPS is tracking your path'
+                      : 'Processing...',
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
                   textAlign: TextAlign.center,
                 ),
               ],
@@ -519,7 +531,7 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
     );
   }
 
-  void _showOfflineMapOptions() async {
+  void _showOfflineMapOptions() {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -533,12 +545,13 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                 ListTile(
                   leading: const Icon(Icons.file_download),
                   title: const Text('Download MBTiles from URL'),
-                  subtitle: const Text('Provide a legal MBTiles URL to store offline'),
+                  subtitle: const Text(
+                    'Provide a legal MBTiles URL to store offline',
+                  ),
                   onTap: () async {
                     Navigator.pop(ctx);
                     final url = await _promptForUrl();
                     if (url == null || url.isEmpty) return;
-                    // Save URL for future auto-downloads
                     await OfflineMapService.setBootstrapUrl(url);
                     double p = 0;
                     if (mounted) {
@@ -552,9 +565,13 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                               content: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  LinearProgressIndicator(value: p > 0 && p < 1 ? p : null),
+                                  LinearProgressIndicator(
+                                    value: p > 0 && p < 1 ? p : null,
+                                  ),
                                   const SizedBox(height: 12),
-                                  Text('${(p * 100).clamp(0, 100).toStringAsFixed(0)}%'),
+                                  Text(
+                                    '${(p * 100).clamp(0, 100).toStringAsFixed(0)}%',
+                                  ),
                                 ],
                               ),
                             );
@@ -562,17 +579,22 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                         ),
                       );
                     }
-                    final ok = await OfflineMapService.downloadMbtilesFromUrlWithProgress(
-                      url,
-                      onProgress: (v) {
-                        p = v;
-                      },
-                    );
+                    final ok =
+                        await OfflineMapService.downloadMbtilesFromUrlWithProgress(
+                          url,
+                          onProgress: (v) {
+                            p = v;
+                          },
+                        );
                     if (mounted) Navigator.of(context).pop();
                     if (!mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                        content: Text(ok ? 'Offline map downloaded' : 'Failed to download MBTiles'),
+                        content: Text(
+                          ok
+                              ? 'Offline map downloaded'
+                              : 'Failed to download MBTiles',
+                        ),
                       ),
                     );
                     setState(() {});
@@ -588,7 +610,11 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                     if (!mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                        content: Text(ok ? 'MBTiles imported' : 'Import cancelled or failed'),
+                        content: Text(
+                          ok
+                              ? 'MBTiles imported'
+                              : 'Import cancelled or failed',
+                        ),
                       ),
                     );
                     setState(() {});
@@ -597,14 +623,20 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                 ListTile(
                   leading: const Icon(Icons.save_alt),
                   title: const Text('Cache tiles for current view'),
-                  subtitle: const Text('Requires permitted tile server; disabled for default OSM'),
+                  subtitle: const Text(
+                    'Requires permitted tile server; disabled for default OSM',
+                  ),
                   onTap: () async {
                     Navigator.pop(ctx);
                     if (!AppConstants.allowTilePrefetch ||
-                        AppConstants.tileUrlTemplate.contains('tile.openstreetmap.org')) {
+                        AppConstants.tileUrlTemplate.contains(
+                          'tile.openstreetmap.org',
+                        )) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('Prefetch disabled: configure a permitted tile server first.'),
+                          content: Text(
+                            'Prefetch disabled: configure a permitted tile server first.',
+                          ),
                         ),
                       );
                       return;
@@ -617,7 +649,9 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                     );
                     if (!mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Cached $count tiles for current view.')),
+                      SnackBar(
+                        content: Text('Cached $count tiles for current view.'),
+                      ),
                     );
                   },
                 ),
@@ -638,11 +672,19 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
           title: const Text('Enter MBTiles URL'),
           content: TextField(
             controller: controller,
-            decoration: const InputDecoration(hintText: 'https://example.com/addis.mbtiles'),
+            decoration: const InputDecoration(
+              hintText: 'https://example.com/addis.mbtiles',
+            ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-            TextButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('Download')),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+              child: const Text('Download'),
+            ),
           ],
         );
       },
@@ -658,13 +700,16 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
       if (res == null || res.files.isEmpty) return false;
       final file = res.files.single;
       final path = file.path;
-      // Validate extension when possible
       if ((path != null && !path.toLowerCase().endsWith('.mbtiles')) &&
-          (file.name.isNotEmpty && !file.name.toLowerCase().endsWith('.mbtiles'))) {
+          (file.name.isNotEmpty &&
+              !file.name.toLowerCase().endsWith('.mbtiles'))) {
         return false;
       }
       final bytes = file.bytes;
-      return await OfflineMapService.importMbtilesFromPath(path ?? '', bytes: bytes);
+      return await OfflineMapService.importMbtilesFromPath(
+        path ?? '',
+        bytes: bytes,
+      );
     } catch (_) {
       return false;
     }
@@ -682,8 +727,6 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
     }
   }
 }
-
-// Download progress UI removed (no longer used)
 
 class _InfoBadge extends StatelessWidget {
   final IconData icon;
@@ -713,10 +756,7 @@ class _InfoBadge extends StatelessWidget {
           const SizedBox(width: 6),
           Text(
             label,
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 14,
-            ),
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
           ),
         ],
       ),
