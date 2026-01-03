@@ -78,7 +78,9 @@ flutter run
 	 - AppBar toggle to enable Simulation (no hardware needed).
 2. Start Scan
 	 - Begins collecting GPS points as you move and soil samples from the BLE device (or simulation).
-	 - The app computes area from your path.
+	 - Shows a small GPS accuracy indicator (± Xm) so you can see fix quality.
+	 - The track is smoothed and obvious GPS “jump” spikes are rejected to reduce jitter.
+	 - The app computes area from your walked perimeter.
 3. Stop Scan
 	 - Averages collected soil samples and calculates area.
 	 - Generates recommendations and immediately shows a SnackBar with the top crop.
@@ -145,15 +147,37 @@ flutter pub outdated
 flutter build apk
 ```
 
-## Offline Map (Addis Ababa)
-- The app can render offline tiles from an MBTiles file.
-- Place an `addis.mbtiles` file in the app's Documents directory on the device:
-	- Android: `/storage/emulated/0/Android/data/<your.app.id>/files/addis.mbtiles`
-	- iOS: App sandbox Documents directory (via Files app, iTunes sharing, or code).
-- On launch, the app will use MBTiles for tiles when available and fall back to online OSM otherwise.
-- Open the map from Home → “Offline Map (Addis Ababa)”.
+## Offline Maps (MBTiles)
 
-Note: MBTiles cannot be loaded directly from Flutter assets. Ensure OpenStreetMap attribution remains visible.
+This app supports an **MBTiles** offline raster map pack (e.g., Addis Ababa). When the pack is present, tiles load from MBTiles; otherwise the app falls back to online tiles.
+
+### Recommended workflow (download inside the app)
+
+1. Configure a bootstrap URL (optional but recommended):
+	- At runtime: pass `--dart-define=BOOTSTRAP_MBTILES_URL=<url>`
+	- Or from the Field Scan screen: **Offline Map Options → Download MBTiles from URL**
+2. Download:
+	- Tap **Download Offline** on the Offline Map screen, or use the Field Scan’s **Offline Map Options**.
+
+The MBTiles file is stored in the app’s documents directory as `addis.mbtiles`.
+
+### Android storage path (where the app actually stores it)
+
+On Android, the MBTiles pack is stored in the app sandbox (not in public Downloads):
+
+- `.../data/user/0/<your.package.name>/app_flutter/addis.mbtiles`
+
+This is intentional for reliability and to avoid large-file import OOM issues.
+
+### Import from Files
+
+Importing very large `.mbtiles` via file picker can crash on Android due to memory constraints on some devices, so the app prefers the in-app download approach.
+
+### Zoom levels
+
+If your offline pack only contains a limited zoom range (example: z13–z16), keep the map within that range for best offline results.
+
+Note: MBTiles cannot be loaded directly from Flutter assets. Ensure OpenStreetMap attribution remains visible when using OSM-derived data.
 
 ## Contributing
 - Keep changes minimal and focused.
