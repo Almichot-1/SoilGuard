@@ -17,11 +17,20 @@ class GpsService extends ChangeNotifier {
   StreamSubscription<Position>? _positionStream;
   bool _isTracking = false;
 
+  int _consecutiveGoodFixes = 0;
+  DateTime? _trackingStartedAt;
+  DateTime? _lastAcceptedAt;
+
   TrackingMode _trackingMode = TrackingMode.continuous;
 
   static const double maxAccuracyThreshold = 15.0;
   static const double goodAccuracyThreshold = 5.0;
   static const double minDistanceBetweenPoints = 2.0;
+
+  static const int _requiredGoodFixesToStart = 3;
+  static const Duration _warmupMaxWait = Duration(seconds: 10);
+  static const Duration _spikeWindow = Duration(seconds: 2);
+  static const double _maxJumpMetersInSpikeWindow = 25.0;
 
   GpsStatus get status => _status;
   LatLng? get currentLocation => _currentLocation;
@@ -97,14 +106,14 @@ class GpsService extends ChangeNotifier {
     // Use frequent updates and do filtering ourselves.
     if (defaultTargetPlatform == TargetPlatform.android) {
       return AndroidSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 1,
-        intervalDuration: const Duration(seconds: 1),
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 0,
+        intervalDuration: const Duration(milliseconds: 500),
       );
     }
     return const LocationSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 1,
+      accuracy: LocationAccuracy.best,
+      distanceFilter: 0,
     );
   }
 
@@ -114,6 +123,9 @@ class GpsService extends ChangeNotifier {
 
     _trackPoints.clear();
     _rawPoints.clear();
+    _consecutiveGoodFixes = 0;
+    _trackingStartedAt = DateTime.now();
+    _lastAcceptedAt = null;
     _isTracking = true;
     _status = GpsStatus.tracking;
     notifyListeners();
@@ -134,11 +146,41 @@ class GpsService extends ChangeNotifier {
             if (_currentAccuracy == null || _currentAccuracy!.isNaN) {
               return;
             }
+
+            // Gate recording until we have a stable fix (or a short warmup timeout).
+            final now = position.timestamp;
+            if (_currentAccuracy! <= goodAccuracyThreshold) {
+              _consecutiveGoodFixes += 1;
+            } else {
+              _consecutiveGoodFixes = 0;
+            }
+
+            final warmupExceeded = _trackingStartedAt != null &&
+                DateTime.now().difference(_trackingStartedAt!) >= _warmupMaxWait;
+            final canStartRecording = _consecutiveGoodFixes >= _requiredGoodFixesToStart || warmupExceeded;
+
+            if (_trackPoints.isEmpty && !canStartRecording) {
+              notifyListeners();
+              return;
+            }
+
             if (_currentAccuracy! > maxAccuracyThreshold) {
               return;
             }
 
             final newPoint = _currentLocation!;
+
+            // Reject obvious GPS spikes/jumps over a short interval.
+            if (_trackPoints.isNotEmpty && _lastAcceptedAt != null) {
+              final elapsed = now.difference(_lastAcceptedAt!);
+              if (elapsed <= _spikeWindow) {
+                const distance = Distance();
+                final meters = distance.as(LengthUnit.Meter, _trackPoints.last, newPoint);
+                if (meters > _maxJumpMetersInSpikeWindow) {
+                  return;
+                }
+              }
+            }
 
             if (_trackPoints.isNotEmpty && !_shouldAddPoint(newPoint)) {
               return;
@@ -155,6 +197,7 @@ class GpsService extends ChangeNotifier {
             }
 
             _trackPoints.add(newPoint);
+            _lastAcceptedAt = now;
             notifyListeners();
           },
           onError: (e) {

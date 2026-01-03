@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter/painting.dart';
 import 'package:mbtiles/mbtiles.dart';
@@ -19,9 +20,17 @@ class OfflineMapService {
   static const double maxLon = 38.90;
 
   static MbTiles? _mb;
+  static String? _docsPath;
   static const _prefsKeyMbtilesUrl = 'mbtiles_url';
 
   static Future<void> init() async {
+    // Cache documents directory path for synchronous lookups inside TileProvider.
+    // TileProvider.getImage is sync, so we must avoid awaiting there.
+    try {
+      _docsPath = (await getApplicationDocumentsDirectory()).path;
+    } catch (_) {
+      _docsPath = null;
+    }
     final path = await _defaultMbTilesPath();
     if (File(path).existsSync()) {
       _mb = MbTiles(mbtilesPath: path);
@@ -44,7 +53,10 @@ class OfflineMapService {
     for (int z = minZoom; z <= maxZoom; z++) {
       final minX = _lon2tileX(minLon, z);
       final maxX = _lon2tileX(maxLon, z);
-      final minYXyz = _lat2tileY(maxLat, z); // note: lat2tileY uses XYZ conversion
+      final minYXyz = _lat2tileY(
+        maxLat,
+        z,
+      ); // note: lat2tileY uses XYZ conversion
       final maxYXyz = _lat2tileY(minLat, z);
       for (int x = minX; x <= maxX; x++) {
         for (int y = minYXyz; y <= maxYXyz; y++) {
@@ -95,7 +107,8 @@ class OfflineMapService {
       final dynamic tile = db.getTile(z: z, x: x, y: yTms);
       db.dispose();
       if (tile is Uint8List) return tile.isNotEmpty;
-      if (tile != null && tile.data is List<int>) return (tile.data as List<int>).isNotEmpty;
+      if (tile != null && tile.data is List<int>)
+        return (tile.data as List<int>).isNotEmpty;
       return false;
     } catch (_) {
       return false;
@@ -121,18 +134,27 @@ class OfflineMapService {
     final prefs = await SharedPreferences.getInstance();
     final saved = prefs.getString(_prefsKeyMbtilesUrl);
     if (saved != null && saved.isNotEmpty) return saved;
-    if (AppConstants.bootstrapMbtilesUrl.isNotEmpty) return AppConstants.bootstrapMbtilesUrl;
+    if (AppConstants.bootstrapMbtilesUrl.isNotEmpty)
+      return AppConstants.bootstrapMbtilesUrl;
     return null;
   }
 
-  static Future<bool> ensureMbtilesAvailable({void Function(double progress)? onProgress}) async {
+  static Future<bool> ensureMbtilesAvailable({
+    void Function(double progress)? onProgress,
+  }) async {
     if (await mbtilesFileExists()) return true;
     final url = await getBootstrapUrl();
     if (url == null || url.isEmpty) return false;
-    return await downloadMbtilesFromUrlWithProgress(url, onProgress: onProgress);
+    return await downloadMbtilesFromUrlWithProgress(
+      url,
+      onProgress: onProgress,
+    );
   }
 
-  static Future<bool> importMbtilesFromPath(String sourcePath, {Uint8List? bytes}) async {
+  static Future<bool> importMbtilesFromPath(
+    String sourcePath, {
+    Uint8List? bytes,
+  }) async {
     try {
       final destPath = await _defaultMbTilesPath();
       final dest = File(destPath);
@@ -146,6 +168,23 @@ class OfflineMapService {
         if (!await src.exists()) return false;
         await src.copy(dest.path);
       }
+      _mb?.dispose();
+      _mb = MbTiles(mbtilesPath: dest.path);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> importMbtilesFromStream(Stream<List<int>> stream) async {
+    try {
+      final destPath = await _defaultMbTilesPath();
+      final dest = File(destPath);
+      if (!await dest.parent.exists()) {
+        await dest.parent.create(recursive: true);
+      }
+      final sink = dest.openWrite();
+      await stream.pipe(sink);
       _mb?.dispose();
       _mb = MbTiles(mbtilesPath: dest.path);
       return true;
@@ -289,6 +328,85 @@ class _MbTilesTileProvider extends TileProvider {
   final MbTiles? _db;
   _MbTilesTileProvider(this._db);
 
+  static int _debugLinesLeft = 12;
+
+  static final Uint8List _transparentPng = Uint8List.fromList(const <int>[
+    0x89,
+    0x50,
+    0x4E,
+    0x47,
+    0x0D,
+    0x0A,
+    0x1A,
+    0x0A,
+    0x00,
+    0x00,
+    0x00,
+    0x0D,
+    0x49,
+    0x48,
+    0x44,
+    0x52,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x08,
+    0x06,
+    0x00,
+    0x00,
+    0x00,
+    0x1F,
+    0x15,
+    0xC4,
+    0x89,
+    0x00,
+    0x00,
+    0x00,
+    0x0A,
+    0x49,
+    0x44,
+    0x41,
+    0x54,
+    0x78,
+    0x9C,
+    0x63,
+    0x00,
+    0x01,
+    0x00,
+    0x00,
+    0x05,
+    0x00,
+    0x01,
+    0x0D,
+    0x0A,
+    0x2D,
+    0xB4,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x49,
+    0x45,
+    0x4E,
+    0x44,
+    0xAE,
+    0x42,
+    0x60,
+    0x82,
+  ]);
+
+  void _debugLog(String message) {
+    if (!kDebugMode) return;
+    if (_debugLinesLeft <= 0) return;
+    _debugLinesLeft--;
+    debugPrint('[MBTILES] $message');
+  }
+
   @override
   ImageProvider<Object> getImage(
     TileCoordinates coordinates,
@@ -299,6 +417,7 @@ class _MbTilesTileProvider extends TileProvider {
       final z = coordinates.z.round();
       final x = coordinates.x.round();
       final y = coordinates.y.round();
+      _debugLog('request z=$z x=$x yXyz=$y');
       return _fileOrNext(z, x, y, options);
     } catch (_) {}
 
@@ -313,7 +432,9 @@ class _MbTilesTileProvider extends TileProvider {
         final dynamic tile = db.getTile(z: z, x: x, y: yTms);
         if (tile is Uint8List && tile.isNotEmpty) {
           return MemoryImage(tile);
-        } else if (tile != null && tile.data is List<int> && (tile.data as List<int>).isNotEmpty) {
+        } else if (tile != null &&
+            tile.data is List<int> &&
+            (tile.data as List<int>).isNotEmpty) {
           return MemoryImage(Uint8List.fromList(tile.data as List<int>));
         }
       }
@@ -336,10 +457,12 @@ class _MbTilesTileProvider extends TileProvider {
     // This is synchronous-unsafe; but TileProvider expects sync return.
     // We will attempt using existsSync on constructed path (best-effort).
     try {
-      final dir = getApplicationDocumentsDirectorySync();
-      final path = p.join(dir.path, 'tiles', '$z', '$x', '$y.png');
-      final f = File(path);
-      if (f.existsSync()) return FileImage(f);
+      final docsPath = OfflineMapService._docsPath;
+      if (docsPath != null && docsPath.isNotEmpty) {
+        final path = p.join(docsPath, 'tiles', '$z', '$x', '$y.png');
+        final f = File(path);
+        if (f.existsSync()) return FileImage(f);
+      }
     } catch (_) {}
 
     // 2) MBTiles
@@ -349,12 +472,27 @@ class _MbTilesTileProvider extends TileProvider {
         final yTms = ((1 << z) - 1) - y;
         final dynamic tile = db.getTile(z: z, x: x, y: yTms);
         if (tile is Uint8List && tile.isNotEmpty) {
+          _debugLog('HIT mbtiles z=$z x=$x yTms=$yTms bytes=${tile.length}');
           return MemoryImage(tile);
-        } else if (tile != null && tile.data is List<int> && (tile.data as List<int>).isNotEmpty) {
+        } else if (tile != null &&
+            tile.data is List<int> &&
+            (tile.data as List<int>).isNotEmpty) {
+          _debugLog(
+            'HIT mbtiles z=$z x=$x yTms=$yTms bytes=${(tile.data as List<int>).length}',
+          );
           return MemoryImage(Uint8List.fromList(tile.data as List<int>));
         }
+
+        _debugLog('MISS mbtiles z=$z x=$x yTms=$yTms');
+
+        // Avoid noisy network fallback when we *expect* offline tiles.
+        // Returning a transparent tile keeps the UI stable offline.
+        return MemoryImage(_transparentPng);
+      } else {
+        _debugLog('MISS mbtiles (db is null)');
       }
     } catch (_) {}
+      _debugLog('ERROR mbtiles lookup: $e');
 
     // 3) Network
     final template = options.urlTemplate ?? AppConstants.tileUrlTemplate;
@@ -364,20 +502,4 @@ class _MbTilesTileProvider extends TileProvider {
         .replaceAll('{y}', '$y');
     return NetworkImage(url);
   }
-
-  @override
-  void dispose() {
-    _db?.dispose();
-    super.dispose();
-  }
-}
-
-// Sync helper to get documents directory without awaiting (TileProvider API is sync)
-Directory getApplicationDocumentsDirectorySync() {
-  // Fallback to platform-specific known locations
-  final env = Platform.environment;
-  final home = env['USERPROFILE'] ?? env['HOME'] ?? '.';
-  // Use typical Flutter app-documents path under home; this matches path_provider output on Windows.
-  // May not be exact across platforms, but we only need best-effort File.existsSync.
-  return Directory(p.join(home, 'AppData', 'Roaming'));
 }

@@ -10,6 +10,9 @@ class LiveMapWidget extends StatelessWidget {
   final bool isTracking;
   final MapController? mapController;
 
+  static const int _minNativeZoom = 13;
+  static const int _maxNativeZoom = 16;
+
   const LiveMapWidget({
     super.key,
     required this.trackPoints,
@@ -27,16 +30,19 @@ class LiveMapWidget extends StatelessWidget {
       mapController: mapController,
       options: MapOptions(
         initialCenter: center,
-        initialZoom: 18.0,
-        maxZoom: 22.0,
+        // Keep zoom within the offline MBTiles range (13–16) for reliable offline rendering.
+        initialZoom: _maxNativeZoom.toDouble(),
+        maxZoom: 18.0,
         minZoom: 10.0,
       ),
       children: [
         // Map tiles (online with offline fallback)
         TileLayer(
           urlTemplate: AppConstants.tileUrlTemplate,
-          userAgentPackageName: 'com.example.soil_sense',
-          maxZoom: 22,
+          userAgentPackageName: 'soil_sense',
+          maxZoom: 18,
+          minNativeZoom: _minNativeZoom,
+          maxNativeZoom: _maxNativeZoom,
           tileProvider: OfflineMapService.tileProvider,
         ),
         

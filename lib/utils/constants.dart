@@ -25,7 +25,11 @@ class AppConstants {
   static const bool allowTilePrefetch = false; // Set to true only if permitted by your tile provider
   // Optional: set this to a direct raster .mbtiles URL to auto-download on first run.
   // Leave empty to prompt the user once on first scan.
-  static const String bootstrapMbtilesUrl = '';
+  // Configure at build/run time with: --dart-define=BOOTSTRAP_MBTILES_URL=https://...
+  static const String bootstrapMbtilesUrl = String.fromEnvironment(
+    'BOOTSTRAP_MBTILES_URL',
+    defaultValue: '',
+  );
   
   // BLE
   static const String esp32ServiceUuid = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';

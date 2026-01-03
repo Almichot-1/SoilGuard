@@ -34,6 +34,9 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
   int _elapsedSeconds = 0;
   final MapController _mapController = MapController();
 
+  bool _didInitialCenter = false;
+  DateTime _lastFollowMove = DateTime.fromMillisecondsSinceEpoch(0);
+
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
 
@@ -132,7 +135,8 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
     final ble = context.read<BleService>();
     final classicBt = context.read<ClassicBluetoothService>();
 
-    final points = await gps.stopTracking();
+    await gps.stopTracking();
+    final points = gps.getSmoothedTrack();
     final samples = classicBt.isConnected
         ? classicBt.soilSamples
         : ble.soilSamples;
@@ -322,9 +326,28 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
               children: [
                 Consumer<GpsService>(
                   builder: (context, gpsService, _) {
+                    final smoothed = gpsService.getSmoothedTrack();
+
+                    final loc = gpsService.currentLocation;
+                    if (loc != null) {
+                      final shouldFollow = !_didInitialCenter || _scanState == ScanState.scanning;
+                      final now = DateTime.now();
+                      final throttled = now.difference(_lastFollowMove).inMilliseconds < 800;
+
+                      if (shouldFollow && !throttled) {
+                        _didInitialCenter = true;
+                        _lastFollowMove = now;
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (!mounted) return;
+                          // Keep zoom within offline max native zoom (16) for reliable tiles.
+                          _mapController.move(loc, 16);
+                        });
+                      }
+                    }
+
                     return LiveMapWidget(
-                      trackPoints: gpsService.trackPoints,
-                      currentLocation: gpsService.currentLocation,
+                      trackPoints: smoothed,
+                      currentLocation: loc,
                       isTracking: _scanState == ScanState.scanning,
                       mapController: _mapController,
                     );
@@ -335,7 +358,7 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                   left: 16,
                   child: Consumer<GpsService>(
                     builder: (context, gps, _) {
-                      final points = gps.trackPoints;
+                      final points = gps.getSmoothedTrack();
                       if (points.length < 3) {
                         return _InfoBadge(
                           icon: Icons.straighten,
@@ -408,6 +431,12 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                   children: [
                     Consumer<GpsService>(
                       builder: (context, gps, _) {
+                        final acc = gps.currentAccuracy;
+                        final accText = acc == null || acc.isNaN
+                            ? '± —'
+                            : '± ${acc.toStringAsFixed(1)} m';
+                        final accColor = _getAccuracyColor(acc);
+
                         return Container(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 16,
@@ -419,18 +448,34 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
                             ).withValues(alpha: 0.1),
                             borderRadius: BorderRadius.circular(12),
                           ),
-                          child: Row(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Icon(
-                                Icons.gps_fixed,
-                                color: _getGpsColor(gps.status),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.gps_fixed,
+                                    color: _getGpsColor(gps.status),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    '${gps.pointCount}',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: _getGpsColor(gps.status),
+                                    ),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(width: 8),
+                              const SizedBox(height: 2),
                               Text(
-                                '${gps.pointCount}',
+                                accText,
                                 style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: _getGpsColor(gps.status),
+                                  fontSize: 12,
+                                  color: accColor,
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
                             ],
@@ -725,6 +770,19 @@ class _ScanScreenState extends State<ScanScreen> with TickerProviderStateMixin {
       case GpsStatus.noPermission:
         return Colors.red;
     }
+  }
+
+  Color _getAccuracyColor(double? accuracyMeters) {
+    if (accuracyMeters == null || accuracyMeters.isNaN) {
+      return Colors.grey;
+    }
+    if (accuracyMeters <= GpsService.goodAccuracyThreshold) {
+      return Colors.green;
+    }
+    if (accuracyMeters <= GpsService.maxAccuracyThreshold) {
+      return Colors.blue;
+    }
+    return Colors.red;
   }
 }
 
